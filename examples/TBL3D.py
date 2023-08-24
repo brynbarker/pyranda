@@ -92,7 +92,7 @@ ss.addPackage( TBL )
 
 # Import 3D Euler-curvilinear
 #from equation_library import euler_3d
-from equation_library import euler_3d_dir as euler_3d
+from equation_library import euler_3d_dir_no_strong_shocks as euler_3d
 
 euler_3d += """
 bc.const(['u','v','w'],['y1'],0.0)
