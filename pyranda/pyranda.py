@@ -133,13 +133,7 @@ class pyrandaSim:
         self.iprint( icopyright(), 1000 )
 
     def _set_IB_y(self):
-        if self.PyMPI.chunk_3d_hi[1] < self.IB_y:
-            self.IB_offset = -1
-        elif self.PyMPI.chunk_3d_lo[1] < self.IB_y:
-            self.IB_offset = self.IB_y-self.PyMPI.chunk_3d_lo[1]
-        else:
-            self.IB_offset = 0
-
+        self.IB_offset = max(0,min(self.IB_y-self.PyMPI.chunk_3d_lo[1],self.PyMPI.ay))
         
     def iprint(self,sprnt,wpm=0):
         if self.PyMPI.master and (not self.silent):
@@ -413,11 +407,11 @@ class pyrandaSim:
                 if verbose:
                     self.iprint( eq.eqstr )
 
-                rhs = eq.RHS(self)
-
                 # If no LHS , then on to the next eq
                 if not eq.LHS:
                     continue
+                
+                rhs = eq.RHS(self)
                 
                 if eq.rank == 1:
                     self.variables[eq.LHS[0]].data = rhs
@@ -438,7 +432,7 @@ class pyrandaSim:
 
         
         
-    def write(self,wVars=[]):
+    def write(self,wVars=[],path=None):
         """ 
         Write viz file 
         """
@@ -449,15 +443,19 @@ class pyrandaSim:
 
         dumpFile = 'vis' + str(self.cycle).zfill(visInt)
         
+        if path == None:
+            vizDir = self.PyIO.rootname
+        else:
+            vizDir = path
         if self.PyMPI.master == 1:
             try:
-                os.mkdir(os.path.join(self.PyIO.rootname, dumpFile))
+                os.makedirs(os.path.join(vizDir, dumpFile))
             except:
                 pass
 
         self.PyMPI.comm.barrier()   # Wait for directory to be made
         rank = self.PyMPI.comm.rank
-        dumpFile = os.path.join( self.PyIO.rootname,
+        dumpFile = os.path.join( vizDir,
                                  dumpFile,
                                  'proc-%s.%s' % (str(rank).zfill(procInt),str(self.cycle).zfill(visInt)))
 
@@ -469,7 +467,7 @@ class pyrandaSim:
 
         # Write .visit file
         if self.PyMPI.master == 1:
-            vid = open( os.path.join(self.PyIO.rootname, 'pyranda.visit' ) , 'w')
+            vid = open( os.path.join(vizDir, 'pyranda.visit' ) , 'w')
             vid.write("!NBLOCKS %s \n" % self.PyMPI.comm.Get_size() )
             for vdump in self.vizDumpHistory:
                 iv = vdump[0]
@@ -479,53 +477,64 @@ class pyrandaSim:
                                                     'proc-%s.%s.%s' % (str(p).zfill(procInt),str(iv).zfill(visInt),suff ) ) )
             vid.close()
 
-    def writeToFile(self,labels,eqs,problem,utau,nu,first=False):
+    def writeToFile(self,problem,utau,nu,first=False):
+        labels = ['uumean','uvmean','vvmean','wwmean']
+        eqs = [(0,0),(0,1),(1,1),(2,2)]
         """
         Write Reynolds stresses to dat file
         """
-        if self.IB_offset == -1: return
         dumpDir = 'TBL3D_output/'+problem
-        umean = self.variables['u'].data[:,self.IB_offset:,:].mean(axis=(0,2))
-        vmean = self.variables['v'].data[:,self.IB_offset:,:].mean(axis=(0,2))
-        wmean = self.variables['w'].data[:,self.IB_offset:,:].mean(axis=(0,2))
+        if self.PyMPI.master and not os.path.exists(dumpDir):
+            os.makedirs(dumpDir)
+        umean = self.variables['u'].mean(axis=(0,2)) # .data[:,self.IB_offset:,:]
+        vmean = self.variables['v'].mean(axis=(0,2)) # .data[:,self.IB_offset:,:]
+        wmean = self.variables['w'].mean(axis=(0,2)) # .data[:,self.IB_offset:,:]
         bars = [umean,vmean,wmean]
         vel_strs = ['u','v','w']
 
-        if self.PyMPI.x1proc:
-            lo,hi = self.PyMPI.chunk_3d_lo[1], self.PyMPI.chunk_3d_hi[1]
-            lyplus = self.mesh.coords[1].data[0,self.IB_offset:,0]*utau/nu
+        lo,hi = self.PyMPI.chunk_3d_lo[1], self.PyMPI.chunk_3d_hi[1]
+        mode = 'w' if first else 'a'
+        if mode == 'w':
+            lyplus = self.mesh.coords[1].data[0,:,0]*utau/nu * self.PyMPI.x1proc
             gyplus = numpy.zeros((self.ny))
-            gyplus[lo+self.IB_offset:hi+1] = lyplus
+            gyplus[lo:hi+1] = lyplus
             yplus = self.PyMPI.comm.allreduce(gyplus,op=MPI.SUM)
-            if self.PyMPI.master == 1:
-                mode = 'w' if first else 'a'
-                dumpFile = os.path.join(dumpDir,'umean.dat')
-                datfile = open(dumpFile, mode)
-                if mode == 'w':
-                    numpy.savetxt(datafile, yplus)
-                numpy.savetxt(datafile, umean*utau/nu)
-                datfile.close()
 
+        var_means = []
         for (name,eq) in zip(labels,eqs):
-            v0 = self.variables[vel_strs[eq[0]]].data[:,self.IB_y:,:]
-            v1 = self.variables[vel_strs[eq[1]]].data[:,self.IB_y:,:]
-            dumpFile = os.path.join(dumpDir,name + '.dat')
-            v0prime, v1prime = v0.copy(), v1.copy()
-            for yind,(val0,val1) in enumerate(zip(bars[eq[0]],bars[eq[1]])):
+            v0 = self.variables[vel_strs[eq[0]]] # .data[:,self.IB_y:,:]
+            v1 = self.variables[vel_strs[eq[1]]] # .data[:,self.IB_y:,:]
+            v0prime, v1prime = v0.data.copy(), v1.data.copy()
+            var_mean = numpy.zeros_like(umean)
+            local_bar0 = bars[eq[0]][lo:hi+1]
+            local_bar1 = bars[eq[1]][lo:hi+1]
+            for yind,(val0,val1) in enumerate(zip(local_bar0, local_bar1)):
                 v0prime[:,yind,:] -= val0
                 v1prime[:,yind,:] -= val1
-            idata = v0prime*v1prime
-            var_mean = self.variables['u'].mean(axis=(0,2),idata=idata)
 
-            if self.PyMPI.master == 1:
-                mode = 'w' if first else 'a'
+            idata = v0prime * v1prime
+            
+            var_mean = self.variables['u'].mean(axis=(0,2),idata=idata)
+            var_means.append(var_mean)
+    
+        self.PyMPI.comm.Barrier()
+        if self.PyMPI.master:
+            dumpFile = os.path.join(dumpDir,'umean.dat')
+            datfile = open(dumpFile, mode)
+            if mode == 'w':
+                numpy.savetxt(datfile, yplus[self.IB_y:])
+            numpy.savetxt(datfile, umean[self.IB_y:]*utau/nu)
+            datfile.close()
+
+            for (name,var_mean) in zip(labels,var_means):
+                dumpFile = os.path.join(dumpDir,name + '.dat')
                 datfile = open(dumpFile, mode)
                 if mode == 'w':
-                    numpy.savetxt(datafile, yplus)
-                numpy.savetxt(datafile, var_mean*utau/nu)
+                    numpy.savetxt(datfile, yplus[self.IB_y:])
+                numpy.savetxt(datfile, var_mean[self.IB_y:]*utau/nu)
                 datfile.close()
 
-    def writeRestart(self,ivars=None,suffix=None):
+    def writeRestart(self,ivars=None,suffix=None,path=None):
         """
         -writeRestart-
         Description - Main driver to write the entire pyrandaSim state
@@ -538,7 +547,11 @@ class pyrandaSim:
             suffix = '_' + str(self.cycle).zfill(restartInt)
 
         # Prep directory
-        dumpDir = os.path.join(self.PyIO.rootname, "restart" + suffix)
+        if path == None:
+            vizDir = self.PyIO.rootname
+        else:
+            vizDir = path
+        dumpDir = os.path.join(vizDir, "restart" + suffix)
         if self.PyMPI.master == 1:
             try:
                 os.mkdir( dumpDir )

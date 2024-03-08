@@ -26,18 +26,25 @@ class pyrandaTimestep(pyrandaPackage):
         self.dz = pysim.mesh.d3
         self.pysim = pysim
         self.GridLen = pysim.mesh.GridLen
+        self.IB_offset = pysim.IB_offset
         
-
     def get_sMap(self):
         """
         String mappings for this package.  Packages added to the main
         pyranda object will check this map
         """
         sMap = {}
+        sMap['dt.IBsqroot('] = "self.packages['Timestep'].IBsqroot("
         sMap['dt.courant('] = "self.packages['Timestep'].courant("
         sMap['dt.diff('] = "self.packages['Timestep'].diff("
         sMap['dt.diffDir('] = "self.packages['Timestep'].diffDir("
         self.sMap = sMap
+
+    def IBsqroot(self, val):
+        val[:,:self.IB_offset,:] *= 0.
+        if numpy.min(val) < 0.:
+            import pdb; pdb.set_trace()
+        return numpy.sqrt(val)
 
     def courant(self,u,v,w,c):
 
@@ -59,6 +66,7 @@ class pyrandaTimestep(pyrandaPackage):
                       numpy.abs(v) / self.dy +
                       numpy.abs(w) / self.dz )
         
+        vrate[:,:self.IB_offset,:] *= 0.
         
         crate = numpy.abs(c) / self.GridLen
 
@@ -72,6 +80,9 @@ class pyrandaTimestep(pyrandaPackage):
 
         delta = self.GridLen
         drate = density * delta * delta / numpy.maximum( 1.0e-12, bulk )
+
+        drate[:,:self.IB_offset,:] += 1.
+
         dt_max = self.pyranda.PyMPI.min3D( drate )
 
         return dt_max
@@ -80,9 +91,10 @@ class pyrandaTimestep(pyrandaPackage):
     def diffDir(self,bulk,density,delta):
 
         drate = density * delta * delta / numpy.maximum( 1.0e-12, bulk )
+
+        drate[:,:self.IB_offset,:] += 1.
+
         dt_max = self.pyranda.PyMPI.min3D( drate )
 
         return dt_max
 
-        
-        

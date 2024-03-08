@@ -86,12 +86,12 @@ class pyrandaTBL(pyrandaPackage):
         self.sMap = sMap
         
 
-    def setup(self):
+    def setup(self, restart=False):
         TBLfiles = self.BL_data
 
         IB_y = self.pysim.IB_y
         self.IB_offset = self.pysim.IB_offset
-        if self.IB_offset == -1: return
+        #if self.IB_offset == -1: return
 
         
         # Flow in -x- wall in -y-
@@ -202,6 +202,11 @@ class pyrandaTBL(pyrandaPackage):
             self.bvO = setFiltCoeffs(self.VIy[1],self.VIz)
             self.bwO = setFiltCoeffs(self.WIy[1],self.WIz)
 
+            if restart:
+                self.RHO_u = self.pysim.variables['tblRHOu'].data
+                self.RHO_v = self.pysim.variables['tblRHOv'].data
+                self.RHO_w = self.pysim.variables['tblRHOw'].data
+
         # END X1proc check
             
         # Set up a restart directory
@@ -276,6 +281,10 @@ class pyrandaTBL(pyrandaPackage):
             self.pysim.variables[self.v].data[0,self.IB_offset:,:] = vinlet
             self.pysim.variables[self.w].data[0,self.IB_offset:,:] = winlet
             #self.pysim.variables[self.T].data[0,:,:] = Tinlet
+            
+            self.pysim.variables['tblRHOu'].data = self.RHO_u
+            self.pysim.variables['tblRHOv'].data = self.RHO_v
+            self.pysim.variables['tblRHOw'].data = self.RHO_w
 
         # Reconcile EOS outside of this loop/BC call
             
